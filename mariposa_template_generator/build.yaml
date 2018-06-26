@@ -1,0 +1,10 @@
+builders:
+  build_native:
+    auto_apply: root_package
+    build_to: source
+    import: "package:mariposa_template_generator/mariposa_template_generator.dart"
+    builder_factories:
+      - mariposaTemplateBuilder
+    build_extensions:
+      .dart:
+        - .mariposa_template.g.dart
