@@ -1,3 +1,5 @@
+import 'package:html_builder/html_builder.dart';
+
 /// An annotation that instructs `package:mariposa_template_generator` on how to generate code for a static HTML template.
 class Template {
   /// The name of the HTML tag to generate.
@@ -31,3 +33,9 @@ class Template {
       this.tagName: 'div',
       this.directives: const []});
 }
+
+Node ngIf(bool condition, Iterable<Node> children, {String tagName: 'div'}) =>
+    condition != true ? null : h(tagName, {}, children ?? []);
+
+Node ngFor<T>(Iterable<T> items, Node Function(T) f, {String tagName: 'div'}) =>
+    h(tagName, {}, items?.map(f) ?? []);

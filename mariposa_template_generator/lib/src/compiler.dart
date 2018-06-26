@@ -22,7 +22,7 @@ Library compile(TemplateContext ctx) {
     if (ctx.isClass)
       lib.body.add(compileClass(ctx));
     else
-      lib.body.add(compileFunction(ctx, lib.body.add));
+      lib.body.add(compileFunction(ctx));
   });
 }
 
@@ -43,12 +43,12 @@ Class compileClass(TemplateContext ctx) {
         method
           ..name = ctx.template.isContextAware ? 'contextAwareRender' : 'render'
           ..annotations.add(refer('override'))
-          ..body = compileRenderMethod(method, ctx, clazz.methods.add);
+          ..body = compileRenderMethod(ctx, clazz.methods.add);
       }));
   });
 }
 
-Method compileFunction(TemplateContext ctx, void Function(Method) addMethod) {
+Method compileFunction(TemplateContext ctx) {
   return new Method((method) {
     for (var parameter in ctx.functionElement.parameters) {
       var p = new Parameter((b) {
@@ -72,7 +72,13 @@ Method compileFunction(TemplateContext ctx, void Function(Method) addMethod) {
       ..name = ctx.name
       ..returns = compileType(ctx.functionElement.returnType)
       ..docs.addAll(ctx.functionElement.documentationComment?.split('\n') ?? [])
-      ..body = compileRenderMethod(method, ctx, addMethod);
+      ..body = new Block((block) {
+        block.statements.addAll(
+          compileRenderMethod(
+                  ctx, (method) => block.statements.add(method.closure.code))
+              .statements,
+        );
+      });
   });
 }
 
@@ -87,10 +93,20 @@ Reference compileType(DartType type) {
   }
 }
 
-Code compileRenderMethod(MethodBuilder method, TemplateContext ctx,
-    void Function(Method) addMethod) {
+Block compileRenderMethod(
+    TemplateContext ctx, void Function(Method) addMethod) {
   return new Block((block) {
     var builder = refer('builder');
+
+    // Add String _toString(x) => x.toString();
+    addMethod(new Method((b) {
+      b
+        ..name = '_toString'
+        ..returns = refer('String')
+        ..body = refer('x').property('toString').call([]).returned.statement
+        ..requiredParameters.add(new Parameter((b) => b..name = 'x'))
+        ..docs.add('// ignore: unused_element');
+    }));
 
     // var builder = new NodeBuilder('...');
     block.statements.add(
@@ -129,29 +145,132 @@ Code compileRenderMethod(MethodBuilder method, TemplateContext ctx,
 
 Expression compileTemplateAst(TemplateAst ast, TemplateContext ctx) {
   if (ast is TextAst) {
-    // TODO: Expressions, etc.
-    return refer('text').call([literalString(ast.value.trim().isEmpty ? '' : ast.value.trim())]);
+    return refer('text')
+        .call([literalString(ast.value.replaceAll('\n', '\\n'))]);
+  }
+
+  if (ast is ParsedInterpolationAst) {
+    return refer('text').call([
+      refer('_toString').call([
+        new CodeExpression(new Code(ast.value.replaceAll('\n', '\\n'))),
+      ])
+    ]);
   }
 
   if (ast is ParsedElementAst) {
-    // TODO: Call functions instead
-    var attrs = {};
+    var attrs = <String, Expression>{};
+    var children = new List<Expression>.from(
+        ast.childNodes.map((node) => compileTemplateAst(node, ctx)));
 
     for (var attr in ast.attributes) {
-      attrs[attr.name] = attr.value;
+      compileAttribute(attr, attrs, ctx);
     }
 
-    return refer('h').call([
-      literalString(ast.name),
-      literalMap(attrs),
+    var directive = ctx.template.findDirective(ast.name);
+
+    if (directive == null) {
+      return refer('h').call([
+        literalString(ast.name),
+        literalMap(attrs),
+        literalList(children),
+      ]);
+    } else if (directive.isClass) {
+      return refer(directive.name)
+          .newInstance([], attrs..['c'] = literalList(children));
+    } else {
+      return refer(directive.name)
+          .call([], attrs..['c'] = literalList(children));
+    }
+  }
+
+  if (ast is ParsedStarAst) {
+    return refer(ast.name).call([
+      new CodeExpression(new Code(ast.value)),
       literalList(ast.childNodes.map((node) => compileTemplateAst(node, ctx))),
     ]);
   }
 
+  if (ast is EmbeddedTemplateAst) {
+    return compileEmbeddedTemplateAst(ast, ctx);
+  }
 
-  return refer('h').call([
-    literalString(ast.runtimeType.toString()),
-    literalMap({}),
-    literalList(ast.childNodes.map((node) => compileTemplateAst(node, ctx))),
+  throw new UnsupportedError(
+      'Cannot yet compile ${ast.runtimeType}:\n${ast.sourceSpan.highlight(
+          color: true)}');
+}
+
+Expression compileEmbeddedTemplateAst(
+    EmbeddedTemplateAst ast, TemplateContext ctx) {
+  if (ast.attributes.isEmpty) {
+    if (ast.isSynthetic) {
+      return compileSyntheticTemplate(ast as SyntheticTemplateAst, ctx);
+    }
+
+    throw new UnsupportedError(
+        'Cannot yet compile embedded template without attributes:\n${ast
+            .sourceSpan.highlight(
+            color: true)}');
+  }
+
+  var attr = ast.attributes.first;
+
+  if (ast.letBindings.isEmpty) {
+    throw new StateError(
+        '*${attr.name} without any "let" bindings:\n${attr.sourceSpan.highlight(
+            color: true)}');
+  }
+
+  // We want to return a call to ngFor(items, (item) => ...);
+
+  var binding = ast.letBindings.first;
+  var closure = new Method((b) {
+    // Just return a div with the children...
+    b
+      ..requiredParameters.add(new Parameter((b) => b..name = binding.name))
+      ..body = refer('div')
+          .call([], {
+            'c': literalList(
+                ast.childNodes.map((child) => compileTemplateAst(child, ctx)))
+          })
+          .returned
+          .statement;
+  });
+
+  return refer(attr.name).call([
+    new CodeExpression(new Code(binding.value)),
+    closure.closure,
   ]);
+}
+
+Expression compileSyntheticTemplate(
+    SyntheticTemplateAst ast, TemplateContext ctx) {
+  return compileTemplateAst(ast.origin, ctx);
+}
+
+void compileAttribute(
+    AttributeAst attr, Map<String, Expression> attrs, TemplateContext ctx) {
+  if (attr is ParsedAttributeAst) {
+    // Boolean attribute
+    if (attr.value == null) {
+      attrs[attr.name] = literalTrue;
+    } else if (attr.value != null) {
+      attrs[attr.name] = literalString(attr.value);
+    } else if (attr.mustaches.isNotEmpty) {
+      var parts = attr.mustaches.map<Expression>((ast) {
+        return new CodeExpression(new Code(ast.value));
+      });
+
+      if (parts.length == 1) {
+        attrs[attr.name] = parts.first;
+      } else {
+        attrs[attr.name] = literalList(parts);
+      }
+    } else {
+      throw new UnsupportedError(
+          'Cannot compile attribute:\n${attr.sourceSpan.highlight(
+              color: true)}');
+    }
+  } else {
+    attrs[attr.name] = literalString(attr.value);
+  }
 }

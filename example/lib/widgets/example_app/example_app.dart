@@ -11,6 +11,15 @@ part 'example_app.mariposa_template.g.dart';
     Hello, `package:mariposa_template!`
     <br>
     <githubLink target="_self"></githubLink>
+    <br>
+    It's now {{new DateTime.now()}}.
+    
+    <ul *ngFor="let item of [1, 2, 3]">
+      <div *ngIf="true"></div>
+    </ul>
+    
+    <button (click)="justBanana()"></button>
+    <button [(click)]="bananaInABox()"></button>
   </div>
   ''',
 )

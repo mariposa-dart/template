@@ -1,1 +1,3 @@
 name: mariposa_template
+dependencies:
+  html_builder: ^1.0.0

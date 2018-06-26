@@ -25,6 +25,9 @@ class TemplateReader {
         d.map((o) => new DirectiveReader(new ConstantReader(o))));
   }
 
+  DirectiveReader findDirective(String name) =>
+      directives.firstWhere((d) => d.name == name, orElse: () => null);
+
   Future<String> readTemplate(AssetId assetId, AssetReader reader) async {
     if (_template != null) return _template;
     var template = constantReader.peek('template')?.stringValue;
